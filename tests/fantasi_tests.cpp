@@ -779,12 +779,19 @@ private slots:
         QVERIFY(generator.unsaved());
         QVERIFY(!generator.error().isEmpty());
         QFile::setPermissions(dir.path() + "/out", QFile::ReadOwner | QFile::WriteOwner | QFile::ExeOwner);
+        // Its poster never replaces an image that took the name meanwhile.
+        const QString taken = dir.path() + "/out/" + QFileInfo(QDir(dir.path() + "/music").entryList({"*.mp3"}).value(0)).completeBaseName() + ".png";
+        QVERIFY(write(taken, "an image"));
         generator.retrySave();
-        // Nothing else starts while the poster is made.
-        QVERIFY(generator.busy());
-        generator.makeSong("another");
-        QTRY_COMPARE(saved.count(), 1);
-        QTRY_VERIFY(!generator.busy());
+        QCOMPARE(saved.count(), 0);
+        QVERIFY(generator.unsaved());
+        QFile image(taken);
+        QVERIFY(image.open(QIODevice::ReadOnly));
+        QCOMPARE(image.readAll(), QByteArray("an image"));
+        image.close();
+        QVERIFY(image.remove());
+        generator.retrySave();
+        QCOMPARE(saved.count(), 1);
         QVERIFY(!generator.unsaved());
         QCOMPARE(generator.error(), QString());
         // Written first, in the language's plain code, then rendered as written.

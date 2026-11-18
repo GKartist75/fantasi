@@ -45,7 +45,7 @@ public:
     explicit Generator(Models *models, const QString &folder = {}, const QString &musicFolder = {}, QObject *parent = nullptr);
     ~Generator() override;
 
-    bool busy() const { return !m_job.isEmpty() || m_submitting || m_postering; }
+    bool busy() const { return !m_job.isEmpty() || m_submitting; }
     QString stage() const { return m_stage; }
     int step() const { return m_step; }
     int totalSteps() const { return m_totalSteps; }
@@ -142,9 +142,11 @@ private:
     // its prompt, and a song's title.
     bool writePoster(const QString &media, const QImage &frame, const QString &prompt, const QString &title = {},
                      const QByteArray &wave = {});
-    // Reads the saved song's shape without holding up the window, writes its
-    // poster, and only then says the song is saved and the job done.
-    void posterSong();
+    // Reads the finished song's shape without holding up the window, then
+    // saves the song and its poster and ends the job.
+    void shapeSong();
+    // Writes the saved song's poster, and only then says the song is saved.
+    bool posterSong();
     // The job in hand on its server: itself, or its `cancel` or `result`.
     QString jobPath(const QString &action = {}) const;
     void followSong(const QString &status);
@@ -186,8 +188,7 @@ private:
     QString m_lyrics;
     // A song that's saved but has no poster yet, so the history can't list it.
     QString m_unposted;
-    // Its poster is being made, which nothing else may start during.
-    bool m_postering = false;
+    QByteArray m_wave;
     bool m_cancelling = false;
     QString m_stage;
     int m_step = 0;

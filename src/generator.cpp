@@ -439,10 +439,7 @@ void Generator::followSong(const QString &status) {
                 // Remembered, so the next one as long knows from the start.
                 QSettings().setValue("durations/" + m_durationKey, m_clock.elapsed() / 1000.0);
                 emit changed();
-                if (save())
-                    posterSong();
-                else
-                    finish(m_error);
+                shapeSong();
             }
         });
     }
@@ -647,7 +644,7 @@ bool Generator::save() {
             if (m_song) {
                 // Not saved, as far as anyone is told, until its poster is too.
                 m_unposted = path;
-                return true;
+                return posterSong();
             } else if (m_video) {
                 if (!m_firstFrame.isNull()) {
                     writePoster(path, m_firstFrame, m_prompt);
@@ -671,32 +668,15 @@ bool Generator::save() {
     return false;
 }
 
-void Generator::posterSong() {
-    // A song shows by its own shape, taken from its sound as ffmpeg plays it out.
-    // Busy until it's done, and the app kept running, on a second try too.
-    m_postering = true;
-    if (!m_locker)
-        m_locker = std::make_unique<QEventLoopLocker>();
+void Generator::shapeSong() {
+    // A song shows by its own shape, taken from its sound as ffmpeg plays it
+    // out, before anything is saved: the song and its poster then take their
+    // names one right after the other.
     auto *sound = new QProcess(this);
     auto done = [this, sound] {
         sound->deleteLater();
-        m_postering = false;
-        const QByteArray wave = songWave(sound->readAllStandardOutput());
-        // Drawn as the window draws it, for a file manager to show.
-        QImage shape(1200, 400, QImage::Format_ARGB32);
-        shape.fill(Qt::transparent);
-        QPainter painter(&shape);
-        const double slot = double(shape.width()) / waveBars;
-        for (int i = 0; i < wave.size(); ++i) {
-            const double height = std::max(4.0, uchar(wave[i]) / 255.0 * shape.height());
-            painter.fillRect(QRectF(i * slot + slot * 0.2, (shape.height() - height) / 2, slot * 0.6, height), QColor(128, 128, 128));
-        }
-        painter.end();
-        // Without its poster the history can't list the song, so it stays
-        // unsaved, to try again.
-        if (writePoster(m_unposted, shape, m_prompt, songTitle(m_lyrics, m_prompt), wave))
-            emit saved(std::exchange(m_unposted, {}));
-        finish(m_error);
+        m_wave = songWave(sound->readAllStandardOutput());
+        finish(save() ? QString() : m_error);
     };
     // Without ffmpeg the song still gets its poster, flat.
     connect(sound, &QProcess::finished, this, done);
@@ -704,7 +684,28 @@ void Generator::posterSong() {
         if (error == QProcess::FailedToStart)
             done();
     });
-    sound->start("ffmpeg", {"-loglevel", "error", "-i", m_unposted, "-ac", "1", "-ar", "8000", "-f", "s16le", "-"});
+    sound->start("ffmpeg", {"-loglevel", "error", "-f", "mp3", "-i", "pipe:0", "-ac", "1", "-ar", "8000", "-f", "s16le", "-"});
+    sound->write(m_pending);
+    sound->closeWriteChannel();
+}
+
+bool Generator::posterSong() {
+    // Drawn as the window draws it, for a file manager to show.
+    QImage shape(1200, 400, QImage::Format_ARGB32);
+    shape.fill(Qt::transparent);
+    QPainter painter(&shape);
+    const double slot = double(shape.width()) / waveBars;
+    for (int i = 0; i < m_wave.size(); ++i) {
+        const double height = std::max(4.0, uchar(m_wave[i]) / 255.0 * shape.height());
+        painter.fillRect(QRectF(i * slot + slot * 0.2, (shape.height() - height) / 2, slot * 0.6, height), QColor(128, 128, 128));
+    }
+    painter.end();
+    // Without its poster the history can't list the song, so it stays
+    // unsaved, to try again.
+    if (!writePoster(m_unposted, shape, m_prompt, songTitle(m_lyrics, m_prompt), m_wave))
+        return false;
+    emit saved(std::exchange(m_unposted, {}));
+    return true;
 }
 
 bool Generator::writePoster(const QString &media, const QImage &frame, const QString &prompt, const QString &title,
@@ -722,10 +723,22 @@ bool Generator::writePoster(const QString &media, const QImage &frame, const QSt
         poster.setText("fantasi-title", title);
         poster.setText("fantasi-wave", QString::fromLatin1(wave.toHex()));
     }
-    // A clip's poster is beside it; a song's is among the images.
-    QSaveFile file(m_folder + "/" + info.completeBaseName() + ".png");
-    file.setDirectWriteFallback(false);
-    if (file.open(QIODevice::WriteOnly) && poster.save(&file, "PNG") && file.commit()) {
+    // A clip's poster is beside it; a song's is among the images, where it
+    // is renamed into place so it never replaces an image of the same name.
+    const QString target = m_folder + "/" + info.completeBaseName() + ".png";
+    bool written = false;
+    if (song) {
+        QTemporaryFile temporary(m_folder + "/.fantasi-XXXXXX.png");
+        written = temporary.open() && poster.save(&temporary, "PNG") && temporary.flush()
+               && temporary.setPermissions(QFile::ReadOwner | QFile::WriteOwner | QFile::ReadGroup | QFile::ReadOther)
+               && temporary.rename(target);
+        temporary.setAutoRemove(!written);
+    } else {
+        QSaveFile file(target);
+        file.setDirectWriteFallback(false);
+        written = file.open(QIODevice::WriteOnly) && poster.save(&file, "PNG") && file.commit();
+    }
+    if (written) {
         m_error.clear();
         emit posterSaved(media);
         return true;
@@ -740,7 +753,9 @@ void Generator::retrySave() {
     if (!unsaved() || busy())
         return;
     m_error.clear();
-    if (!m_unposted.isEmpty() || (save() && m_song))
+    if (m_unposted.isEmpty())
+        save();
+    else
         posterSong();
     emit changed();
 }
